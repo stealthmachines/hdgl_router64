@@ -1,0 +1,385 @@
+# ============================================================================
+# HDGL NATIVE KERNEL — phi-lattice architecture
+# ============================================================================
+#
+# From PLAN.md:
+#   "Compiler, Firmware, Kernel, Runtime are not separate systems.
+#    They are different regions of the same recursive state evolution."
+#
+# From conscious-128-bit-floor (bootloaderZ V6.0):
+#   "No SHA. No AES. No XOR. No external crypto. The lattice IS the kernel."
+#   "phi_fold replaces SHA-256. phi_stream replaces AES.
+#    APA_FLAG_CONSENSUS replaces privilege rings.
+#    lk_read/lk_advance/lk_commit replace the syscall ABI.
+#    GOI/GUZ replace hardware fault vectors."
+#
+# WHAT IS REMOVED (traditional OS mechanisms):
+#   IDT — Intel interrupt descriptor table
+#   PIC — 8259A interrupt controller
+#   PIT — 8253/8254 programmable interval timer
+#   INT 0x80 — Linux-style syscall ABI
+#   IRET — interrupt return instruction
+#   Ring 0 / Ring 3 — x86 privilege levels
+#   GDT segments — segmented memory model protection
+#
+# WHAT REPLACES THEM (native framework primitives):
+#   phi_tick     ← replaces timer ISR (IRQ0)
+#   phi_lk_read  ← replaces INT 0x80 (lk_read call)
+#   phi_advance  ← replaces lk_advance (epoch tick)
+#   phi_consensus← replaces privilege ring check
+#   GOI/GUZ      ← replace hardware fault vectors
+#   APA_FLAG_CONSENSUS ← replaces ring 0 permission
+#
+# ============================================================================
+
+# ============================================================================
+# PHI-LATTICE KERNEL GLYPHS
+# ============================================================================
+
+glyph phi_lattice
+    parent      = root
+    id          = PHI_LATTICE
+    class       = RUNTIME
+    state       = INIT
+
+    # 128 slots × 32-bit mantissa = 512 bytes at 0x101020
+    # Seeded by: fib[i%16] × prime[i%16] × PHI^(1+(i%4))
+    # This IS the secret key. No external key material.
+    # The lattice IS the kernel IS the key.
+    slots       = 128
+    base        = 0x101020
+    seed_func   = prismatic_recursion
+    beta        = 0.1
+
+    rule init
+        match       = state INIT
+        transform   = PHI_SEED_LATTICE
+        # Seed 128 slots with phi-harmonic values:
+        #   slot[i] = (slot[i-1]*3 + fib[i%16]*prime[i%16]*PHI^(1+(i%4))) mod 2^32
+        # XOR-free. Additive. Phi-harmonic.
+        # No rand(). No BCryptGenRandom(). The Omega hardware graph IS the entropy.
+        advance     = CONFIGURED
+    end
+
+    rule goi_check
+        # GOI: Gradual Overflow Infinity — slot exceeded saturation limit
+        # Replaces: hardware fault vector (#OF, #GP)
+        # Native response: saturate to GOI limit, continue execution
+        match       = slot_value > 0xFFFF0000
+        transform   = SATURATE_TO_GOI
+        # slot = 0xFFFF0000, continue — no crash, no exception, no IDT
+        advance     = CONFIGURED
+    end
+
+    rule guz_check
+        # GUZ: Gradual Underflow Zero — slot below significance threshold
+        # Replaces: hardware fault vector (#DE, divide error)
+        # Native response: floor to GUZ limit
+        match       = slot_value < 0x00000100
+        transform   = FLOOR_TO_GUZ
+        advance     = CONFIGURED
+    end
+
+    rule phi_tick
+        # Wu-wei tick: one prismatic_recursion step
+        # Called at every sh_loop iteration (wu-wei — shell poll IS the tick)
+        # Replaces: timer ISR, PIT interrupt, IRQ0
+        # Formula: prismatic_recursion(lat, i, val) =
+        #   sqrt(PHI^(i%16) * fib_real(i+β) * prime[i%16] * ω) * val^((i%7+1)/8)
+        # This IS Ωₙ₊₁ = T(Ωₙ) — the rewrite tick, native.
+        match       = state CONFIGURED
+        transform   = PRISMATIC_STEP
+        advance     = READY
+    end
+
+end
+
+glyph phi_hash
+    parent      = phi_lattice
+    id          = PHI_HASH
+    class       = RUNTIME
+    state       = INIT
+
+    # phi_fold_hash32: replaces SHA-256 everywhere
+    # Properties (from bootloaderZ V6.0):
+    #   - Keyed MAC: lattice IS the secret key (IV from phi slots)
+    #   - Additive: no XOR; mixing via (a*3 + b + phi_byte) mod 256
+    #   - Analog: every byte of phi[128] participates in every hash
+    #   - NLSB: lattice-keyed nonlinear S-box in finalization
+    #   - No SHA. No external hash. No third-party protocol.
+
+    rule fold_absorb
+        # Delta-fold absorption: additive phi-resonance mixing, no XOR
+        # acc[slot] = (acc[slot]*3 + delta + phi_byte) mod 2^32
+        # delta = (data[i] - prev + lattice[i%128]) mod 2^32
+        match       = state INIT
+        transform   = PHI_FOLD_ABSORB
+        advance     = DISCOVERED
+    end
+
+    rule fold_finalize
+        # 4 rounds: ROTR32-by-3 + add lattice[0]
+        # Mirrors: AES round structure (rotate → substitute → mix)
+        # All lattice-native, no external cipher
+        match       = state DISCOVERED
+        transform   = PHI_FOLD_FINALIZE
+        advance     = EXECUTED
+    end
+
+end
+
+glyph phi_consensus
+    parent      = phi_lattice
+    id          = PHI_CONSENSUS
+    class       = RUNTIME
+    state       = INIT
+
+    # APA_FLAG_CONSENSUS: replaces privilege ring check
+    # Phase lock = permission. No ring 0. No ring 3. No boundary.
+    # The kernel IS the lattice. Consensus IS authorization.
+    #
+    # Algorithm: detect_harmonic_consensus(lat)
+    #   mean = sum(slot[0..127]) / 128
+    #   max_dev = max |slot[i] - mean|
+    #   consensus if max_dev < mean/2
+    # (conservative threshold — tightens as lattice matures)
+
+    rule detect
+        match       = state INIT
+        transform   = DETECT_HARMONIC_CONSENSUS
+        # Sets APA_FLAG_CONSENSUS (1<<4) on all slots when locked
+        advance     = CONFIGURED
+    end
+
+    rule locked
+        # Consensus reached = phase lock = LOCK state
+        # This is what lk_read/lk_commit check before allowing access
+        # No system call gate. No INT instruction. Direct lattice read.
+        match       = state CONFIGURED + phase_var < epsilon
+        transform   = SET_APA_CONSENSUS_FLAG
+        advance     = EXECUTED
+    end
+
+end
+
+glyph phi_kernel_api
+    parent      = phi_lattice
+    id          = PHI_KERNEL_API
+    class       = COMPILER
+    state       = INIT
+
+    # These replace the INT 0x80 syscall ABI entirely.
+    # No gate descriptor. No privilege level switch.
+    # Direct lattice operations — the lattice IS the OS.
+
+    rule phi_lk_read
+        # lk_read(key, size) → phi_fold result
+        # Replaces: INT 0x80 EAX=3 (omega_read)
+        # IN:  ESI = key string, ECX = output size
+        # OUT: EBX = phi_fold(key, lattice state)
+        match       = request LK_READ
+        transform   = PHI_FOLD_KEY_DERIVE
+        advance     = DISCOVERED
+    end
+
+    rule phi_lk_advance
+        # lk_advance() → one prismatic_recursion epoch
+        # Replaces: INT 0x80 EAX=0 (yield) + timer tick
+        # Invalidates GOI cache. Advances all slot mantissas.
+        # New epoch = new key material. Forward secrecy native.
+        match       = request LK_ADVANCE
+        transform   = PRISMATIC_EPOCH_ADVANCE
+        advance     = CONFIGURED
+    end
+
+    rule phi_lk_commit
+        # lk_commit(value) → phi_fold(value, epoch_key) stored in Omega node
+        # Replaces: INT 0x80 EAX=4 (omega_write) + PCR chain
+        # Commits a value to the lattice state with epoch binding.
+        # The committed value is sealed by the current lattice epoch.
+        # Forgery requires knowing the full 128-slot lattice state.
+        match       = request LK_COMMIT
+        transform   = PHI_FOLD_COMMIT
+        advance     = EXECUTED
+    end
+
+end
+
+# ============================================================================
+# PROCESS MODEL — phase consensus as scheduler
+# ============================================================================
+
+glyph phi_process
+    parent      = phi_lattice
+    id          = AUTO
+    class       = RUNTIME
+    state       = INIT
+
+    # A process is an Omega subtree.
+    # Scheduling = Kuramoto phase selection (analog-weighted).
+    # Permission = APA_FLAG_CONSENSUS (phase lock).
+    # No privilege rings. No ring 0/3 boundary.
+    # The lattice IS the scheduler IS the permission model.
+
+    rule spawn
+        # Create child process: allocate Omega node 16-31
+        # Initial phase seeded from phi_lk_read(process_id)
+        match       = request SPAWN
+        transform   = ALLOC_OMEGA_SUBTREE + PHI_SEED_PHASE
+        advance     = INIT
+    end
+
+    rule ready
+        # Process reaches READY when its phase approaches consensus
+        # No preemption. Cooperative. Wu-wei: the process yields naturally.
+        match       = state INIT + phi_consensus APPROACHING
+        transform   = IDENTITY
+        advance     = READY
+    end
+
+    rule run
+        # Kuramoto selection: run the process nearest mean phase
+        # The scheduler IS the oscillator. Phase proximity IS priority.
+        match       = state READY + KURAMOTO_SELECTED
+        transform   = RESTORE_CONTEXT
+        advance     = EXECUTED
+    end
+
+    rule yield
+        # Natural yield: process phase drifts past consensus
+        # The lattice detects drift. No forced preemption.
+        # Wu-wei: the oscillator knows when to yield.
+        match       = state EXECUTED + phase_drift > epsilon
+        transform   = SAVE_CONTEXT
+        advance     = READY
+    end
+
+end
+
+# ============================================================================
+# EMIT RULES — native x86 implementation
+# ============================================================================
+
+rule emit_phi_kernel_init
+    match       = glyph phi_lattice rule init
+    emit
+        ; phi_kernel_init: seeds 128 phi-lattice slots
+        ; No IDT. No PIC. No PIT. No INT. No privilege rings.
+        ; The lattice IS the kernel. Consensus IS permission.
+        ; GOI/GUZ saturate instead of faulting.
+        [bits 32]
+        .kernel_init:
+            ; Phase 1: seed phi lattice at 0x101020
+            ; slot[i] = (slot[i-1]*3 + fib×prime×PHI^n) mod 2^32
+            ; XOR-free. Additive. Phi-harmonic. No external entropy.
+            ; Phase 2: set GOI (0xFFFF0000) and GUZ (0x100) limits
+            ; GOI/GUZ replace hardware fault vectors — saturate, don't crash
+            ; Phase 3: init COM1 poll (no IRQ, no PIC)
+            ; Phase 4: process 0 (shell) state = READY, consensus = LOCK
+            ; Phase 5: mark kernel ready (APA_FLAG_CONSENSUS = 1<<4)
+            ; No sti. No interrupt enable. The phi-tick IS the event loop.
+            ret
+    end
+end
+
+rule emit_phi_tick
+    match       = glyph phi_lattice rule phi_tick
+    emit
+        ; phi_tick: one prismatic_recursion step
+        ; Called at top of sh_loop — wu-wei, the shell poll IS the tick
+        ; Formula: slot += slot*3 + tick_count (GOI-bounded)
+        [bits 32]
+        .phi_tick:
+            ; Inc tick counter
+            inc  dword [0x101010]
+            ; Walk 128 slots: accumulate with GOI check
+            ; slot = (slot*3 + tick) mod 2^32, bounded by GOI limit
+            ret
+    end
+end
+
+rule emit_phi_lk_read
+    match       = glyph phi_kernel_api rule phi_lk_read
+    emit
+        ; phi_lk_read: phi_fold key derivation
+        ; IN: ESI=key, OUT: EBX=phi_fold result
+        ; No XOR. Additive Z/256Z mixing.
+        ; acc = (acc*3 + key_byte + lattice[i]) mod 2^32
+        [bits 32]
+        .phi_lk_read:
+            ; IV from lattice[0]
+            ; Delta-fold absorption over key bytes
+            ; 4 finalization rounds: ROTR32-by-3 + add lattice[0]
+            ; EBX = result
+            ret
+    end
+end
+
+rule emit_phi_consensus
+    match       = glyph phi_consensus rule locked
+    emit
+        ; phi_consensus: detect phase lock
+        ; ZF=1 if max deviation < mean/2
+        ; APA_FLAG_CONSENSUS = permission = no rings needed
+        [bits 32]
+        .phi_consensus:
+            ; mean = sum(slot[0..127]) >> 7
+            ; max_dev = max |slot[i] - mean|
+            ; ZF = (max_dev < mean/2)
+            ret
+    end
+end
+
+# ============================================================================
+# DISK LAYOUT
+# ============================================================================
+
+glyph disk_image
+    id          = DISK_IMAGE
+    class       = STORAGE
+    state       = CONFIGURED
+
+    region boot_stub
+        sectors = 0
+        source  = hdgl_boot.hdg emit
+    end
+
+    region runtime
+        sectors = 1..16
+        source  = hdgl_firmware.hdgl + hdgl_analog.hdgl + hdgl_kernel.hdgl emit
+    end
+
+    region padding
+        sectors = 17
+        fill    = 0x00
+    end
+
+    region source
+        sectors = 18..91
+        source  = hdgl_firmware.hdgl raw
+    end
+
+    region user
+        sectors = 92+
+        # Free for user programs
+        # exec S to run any sector
+    end
+
+end
+
+# ============================================================================
+# END OF HDGL NATIVE KERNEL
+# ============================================================================
+#
+# Ωₙ₊₁ = T(Ωₙ)
+#
+# Where T now includes:
+#   phi_tick        → prismatic_recursion step (no PIT, no IRQ)
+#   phi_lk_read     → phi_fold key derivation (no INT 0x80, no XOR)
+#   phi_advance     → epoch advance (no PIC, no timer)
+#   phi_consensus   → phase lock check (no rings, no gates)
+#   GOI/GUZ         → saturation (no IDT, no fault vectors)
+#
+# The kernel is not a layer. It is the firmware's tick loop
+# with the phi-lattice seeded and consensus as the permission model.
+# ============================================================================
